@@ -1,0 +1,221 @@
+import { writeAllSync } from "https://deno.land/std@0.203.0/streams/mod.ts";
+import nodeCmd from "npm:node-cmd@5";
+
+const domain = ".dns.tool.adele.im.";
+enum Align {
+  Left = 0,
+  Center = 1,
+  Right = 2,
+}
+
+interface dnsResult {
+  domain: string;
+  result: string[];
+}
+
+const uiConsole: {
+  title: string;
+  message: string;
+  align: Align;
+  needed: string;
+}[] = [];
+
+///////////////////////////////////////////////////////////////////////////////
+// Functions
+///////////////////////////////////////////////////////////////////////////////
+
+/**
+ * Add the output to UI buffer.
+ *
+ * @param title - The title output
+ * @param message - The message output
+ * @param needed - Indicate the value response needed
+ * @param align - Define de alignnement (Left,Center,Right)
+ */
+const addToUIBuffer = (
+  title: string,
+  message: string,
+  needed = "",
+  align = Align.Left,
+): void => {
+  uiConsole.push({
+    title: title,
+    message: message,
+    align: align,
+    needed: needed,
+  });
+};
+
+/**
+ * Ouput the UI Buffer.
+ */
+const outputUIBuffer = (): void => {
+  let titlewidth = 0;
+  let messagewidth = 0;
+
+  uiConsole.forEach(function (line) {
+    if (line.needed != "") {
+      if (line.message === line.needed) {
+        line.message = `✅ ${line.message}`;
+      } else {
+        line.message = `❌ ${line.message} => ${line.needed}`;
+      }
+    }
+    titlewidth = Math.max(line.title.length, titlewidth) + 3;
+    messagewidth = Math.max(line.message.length, messagewidth);
+  });
+
+  uiConsole.forEach(function (line) {
+    switch (+line.align) {
+      case Align.Left: {
+        if (line.message == "") {
+          console.log(line.title);
+        } else {
+          console.log(`${line.title.padEnd(titlewidth - 3)} : ${line.message}`);
+        }
+        break;
+      }
+      case Align.Center: {
+        const linewidth = line.title.length + line.message.length;
+        const maxwidth = titlewidth + messagewidth;
+        const padding = maxwidth - ((maxwidth - linewidth) / 2);
+
+        console.log(`${line.title.padStart(padding)}${line.message}`);
+        break;
+      }
+      case Align.Right:
+        console.log("Right");
+        break;
+    }
+  });
+};
+
+/**
+ * Ouput content in the realtime (used for progression state)
+ */
+const realTimeOutput = (message: string): void => {
+  writeAllSync(Deno.stdout, new TextEncoder().encode(message));
+};
+
+/**
+ * Read the /etc/resolv.conf content file
+ *
+ * @Returns - Return the nameserver list
+ */
+const getNameservers = async (): Promise<string[]> => {
+  let servers: string[] = [];
+
+  switch (Deno.build.os) {
+    case "linux": {
+      const resolvconf = await Deno.readTextFile("/etc/resolv.conf");
+      const regex = /nameserver ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|[A-Z0-9:]+)/g;
+      const results = resolvconf.matchAll(regex);
+
+      servers = Array.from(
+        results,
+        (results) => results[1],
+      );
+      break;
+    }
+    case "windows": {
+      const cmdresult = nodeCmd.runSync("exit | nslookup");
+      const address: string = cmdresult.data;
+      const regex = /Address:.*?([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|[A-Z0-9:]+)/g;
+      const results = address.matchAll(regex);
+
+      servers = Array.from(
+        results,
+        (results) => results[1],
+      );
+
+      break;
+    }
+    default:
+      console.error(`${Deno.build.os} Operating System does not supported`);
+      Deno.exit(1);
+  }
+
+  return servers;
+};
+
+/**
+ * Check the A address
+ *
+ * @param entry - The domain name
+ * @returns - The domain name
+ */
+const checkDnsEntry = async (entry: string): Promise<dnsResult> => {
+  // console.log("check ".concat(entry));
+  realTimeOutput(".");
+
+  let result = ["ERROR"];
+
+  try {
+    result = await Deno.resolveDns(
+      entry,
+      "A",
+      { signal: AbortSignal.timeout(1000) },
+    );
+  } catch (error) {
+    result = [error.name];
+  }
+
+  return {
+    domain: entry,
+    result: result,
+  };
+};
+
+///////////////////////////////////////////////////////////////////////////////
+// Main
+///////////////////////////////////////////////////////////////////////////////
+
+realTimeOutput("🔍 Check your DNS configuration ");
+
+const resolveConfIPs = await getNameservers();
+const pub = await checkDnsEntry("public".concat(domain));
+const noexists = await checkDnsEntry("noexists".concat(domain));
+const zero = await checkDnsEntry("zero.priv".concat(domain));
+const classa = await checkDnsEntry("class-a.priv".concat(domain));
+const classb = await checkDnsEntry("class-b.priv".concat(domain));
+const classc = await checkDnsEntry("class-c.priv".concat(domain));
+
+addToUIBuffer("", "");
+addToUIBuffer("", "");
+addToUIBuffer("Analysis results", "", "", Align.Center);
+addToUIBuffer("", "");
+
+addToUIBuffer("Your Operating System ", Deno.build.os);
+addToUIBuffer("Your local DNS resolver ", resolveConfIPs.join(","));
+addToUIBuffer(
+  "Result for ".concat(pub.domain),
+  pub.result.join(","),
+  "8.8.8.8",
+);
+addToUIBuffer(
+  "Result for ".concat(noexists.domain),
+  noexists.result.join(","),
+  "NotFound",
+);
+addToUIBuffer(
+  "Result for ".concat(zero.domain),
+  zero.result.join(","),
+  "TimeoutError",
+);
+addToUIBuffer(
+  "Result for ".concat(classa.domain),
+  classa.result.join(","),
+  "TimeoutError",
+);
+addToUIBuffer(
+  "Result for ".concat(classb.domain),
+  classb.result.join(","),
+  "TimeoutError",
+);
+addToUIBuffer(
+  "Result for ".concat(classc.domain),
+  classc.result.join(","),
+  "TimeoutError",
+);
+
+outputUIBuffer();
